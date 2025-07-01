@@ -25,9 +25,7 @@ env:
 
   # The package to push, without a version tag. The default matches GitHub. For
   # example xpkg.crossplane.io/crossplane/function-template-go. Note that
-  # xpkg.crossplane.io is just an alias for ghcr.io, so we upload to ghcr.io but
-  # this'll be pulled from xpkg.crossplane.io.
-  XPKG: ghcr.io/${{ github.repository}}
+  XPKG: xpkg.upbound.io/${{ github.repository}}
 
   # The package version to push. The default is 0.0.0-gitsha.
   XPKG_VERSION: ${{ inputs.version }}
