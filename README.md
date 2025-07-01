@@ -1,5 +1,5 @@
 # function-openai
-[![CI](https://github.com/crossplane/function-openai/actions/workflows/ci.yml/badge.svg)](https://github.com/crossplane/function-openai/actions/workflows/ci.yml)
+[![CI](https://github.com/upbound/function-openai/actions/workflows/ci.yml/badge.svg)](https://github.com/upbound/function-openai/actions/workflows/ci.yml)
 
 A template for writing a [composition function][functions] in [Go][go].
 
