@@ -1,4 +1,4 @@
-module github.com/crossplane/function-template-go
+module github.com/upbound/function-openai-go
 
 go 1.23
 
