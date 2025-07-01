@@ -9,7 +9,7 @@ import (
 	"github.com/crossplane/function-sdk-go/request"
 	"github.com/crossplane/function-sdk-go/response"
 
-	"github.com/upbound/function-openai-go/input/v1beta1"
+	"github.com/upbound/function-openai/input/v1beta1"
 )
 
 // Function returns whatever response you ask it to.

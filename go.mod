@@ -1,4 +1,4 @@
-module github.com/upbound/function-openai-go
+module github.com/upbound/function-openai
 
 go 1.23.0
 
