@@ -1,23 +1,45 @@
 # function-openai
 [![CI](https://github.com/upbound/function-openai/actions/workflows/ci.yml/badge.svg)](https://github.com/upbound/function-openai/actions/workflows/ci.yml)
 
-A template for writing a [composition function][functions] in [Go][go].
+Use natural language prompts to compose resources.
 
-To learn how to use this template:
+```yaml
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: compose-an-app-with-claude
+spec:
+  compositeTypeRef:
+    apiVersion: example.crossplane.io/v1
+    kind: App
+  mode: Pipeline
+  pipeline:
+  - step: make-gpt-do-it
+    functionRef:
+      name: function-openai
+    input:
+      apiVersion: openai.fn.upbound.io/v1alpha1
+      kind: Prompt
+      prompt: |
+        Use the resource in the <composite> tag to template a Deployment.
+        Use the value at JSON path .spec.replicas to set the Deployment's
+        replicas. Use the value at JSON path .spec.image to set its
+        container image.
 
-* [Follow the guide to writing a composition function in Go][function guide]
-* [Learn about how composition functions work][functions]
-* [Read the function-sdk-go package documentation][package docs]
+        Create a Service that exposes the Deployment's port 8080.
+    credentials:
+    - name: gpt
+      source: Secret
+      secretRef:
+        namespace: crossplane-system
+        name: gpt
+```
 
-If you just want to jump in and get started:
+See `fn.go` for the prompt.
 
-1. Replace `function-openai` with your function in `go.mod`,
-   `package/crossplane.yaml`, and any Go imports. (You can also do this
-   automatically by running the `./init.sh <function-name>` script.)
-1. Update `input/v1beta1/` to reflect your desired input (and run `go generate ./...`)
-1. Add your logic to `RunFunction` in `fn.go`
-1. Add tests for your logic in `fn_test.go`
-1. Update this file, `README.md`, to be about your function!
+Composed resource output _should_ be more stable if you pass the output back in
+using the `--observed-resources` flag. The prompt asks Claude not to change
+existing composed resources unless it has to.
 
 This template uses [Go][go], [Docker][docker], and the [Crossplane CLI][cli] to
 build functions.
