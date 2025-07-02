@@ -162,8 +162,6 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 		return rsp, nil
 	}
 
-	fmt.Println("%+v\n", c)
-
 	b, ok := c.Data[credKey]
 	if !ok {
 		response.Fatal(rsp, errors.Errorf("credential %q is missing required key %q", credName, credKey))
