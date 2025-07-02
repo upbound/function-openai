@@ -7,7 +7,7 @@ Use natural language prompts to compose resources.
 apiVersion: apiextensions.crossplane.io/v1
 kind: Composition
 metadata:
-  name: compose-an-app-with-claude
+  name: compose-an-app-with-gpt
 spec:
   compositeTypeRef:
     apiVersion: example.crossplane.io/v1
@@ -38,7 +38,7 @@ spec:
 See `fn.go` for the prompt.
 
 Composed resource output _should_ be more stable if you pass the output back in
-using the `--observed-resources` flag. The prompt asks Claude not to change
+using the `--observed-resources` flag. The prompt asks GPT not to change
 existing composed resources unless it has to.
 
 This template uses [Go][go], [Docker][docker], and the [Crossplane CLI][cli] to

@@ -1,14 +1,14 @@
 apiVersion: apiextensions.crossplane.io/v1
 kind: Composition
 metadata:
-  name: compose-an-app-with-claude
+  name: compose-an-app-with-gpt
 spec:
   compositeTypeRef:
     apiVersion: example.crossplane.io/v1
     kind: App
   mode: Pipeline
   pipeline:
-  - step: make-claude-do-it
+  - step: make-gpt-do-it
     functionRef:
       name: function-openai
     input:

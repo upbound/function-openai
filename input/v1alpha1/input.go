@@ -22,6 +22,6 @@ type Prompt struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	// Prompt to send to Claude.
+	// Prompt to send to GPT.
 	Prompt string `json:"prompt"`
 }
