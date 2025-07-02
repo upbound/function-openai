@@ -58,6 +58,35 @@ $ docker build . --tag=runtime
 $ crossplane xpkg build -f package --embed-runtime-image=runtime
 ```
 
+## Running crossplane render to debug the function
+There are a few steps to get this going.
+
+1. Add a secret.yaml that contains your OPENAI_API_KEY for use with local
+development.
+```bash
+export OPENAI_API_KEY_B64=$(echo ${OPENAI_API_KEY} | base64)
+
+cat <<EOF | envsubst > example/secret.yaml
+  apiVersion: v1
+  kind: Secret
+  metadata:
+    name: gpt
+    namespace: crossplane-system
+  data:
+    OPENAI_API_KEY: ${OPENAI_API_KEY_B64}
+EOF
+```
+
+2. In a separate terminal, start the function
+```bash
+ go run . --insecure --debug
+```
+
+3. Run `crossplane render`
+```bash
+./hack/bin/crossplane render example/xr.yaml example/composition.yaml example/functions.yaml --function-credentials=example/secret.yaml --verbose
+```
+
 [functions]: https://docs.crossplane.io/latest/concepts/composition-functions
 [go]: https://go.dev
 [function guide]: https://docs.crossplane.io/knowledge-base/guides/write-a-composition-function-in-go
