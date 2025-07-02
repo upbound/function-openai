@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"text/template"
 
@@ -31,14 +32,18 @@ const (
 )
 
 const system = `
-You are a Kubernetes templating tool designed to generate and update Kubernetes
+You are a Kubernetes templating agent designed to generate and update Kubernetes
 Resource Model (KRM) resources using Kubernetes server-side apply. Your task is
 to create, update, or delete YAML manifests based on the provided composite
 resource and any existing composed resources.
-`
 
+Respond with only valid YAML manifests.
+`
 const prompt = `
-<instructions>
+Please keep going until the user's query is completely resolved, before ending
+your turn and yielding back to the user. Only terminate your turn when you are
+sure that the problem is solved.
+
 Please follow these instructions carefully:
 
 1. Analyze the provided composite resource and any existing composed resources.
@@ -48,7 +53,7 @@ Please follow these instructions carefully:
    composite resource, or from other composed resources.
 
 3. Generate a stream of YAML manifests based on your analysis in steps 1 and 2.
-   Each manifest should:
+   Each manifest must:
    a. Be valid for Kubernetes server-side apply (fully specified intent).
    b. Omit names and namespaces.
    c. Include an annotation with the key "upbound.io/name". This annotation
@@ -72,10 +77,8 @@ Please follow these instructions carefully:
        delete it by omitting it from your output.
 
 5. Your output must only be a stream of YAML manifests, each separated by
-   "---". Submit the YAML stream to the submit_yaml_stream tool.
-</instructions>
+   "---".
 
-<example>
 ---
 apiVersion: [api-version]
 kind: [resource-kind]
@@ -88,10 +91,7 @@ spec:
   [resource-specific-fields]
 ---
 [Additional resources as needed]
-</example>
-`
 
-const vars = `
 Here is the composite resource you'll be working with:
 
 <composite>
@@ -111,15 +111,6 @@ Additional input is provided here:
 </input>
 `
 
-const (
-	submitYAMLName             = "submit_yaml_stream"
-	submitYAMLSchemaProperties = `{"yaml_stream":{"type": "string","description":"The YAML stream to submit"}}`
-	submitYAMLDescription      = `
-Accepts a YAML stream to be submitted to the Kubernetes server. If this tool
-returns an error, retry the submission with a fixed version of the YAML.
-`
-)
-
 // Variables used to form the prompt.
 type Variables struct {
 	// Observed composite resource, as a YAML manifest.
@@ -132,24 +123,24 @@ type Variables struct {
 	Input string
 }
 
-// Function asks Claude to compose resources.
+// Function asks GPT to compose resources.
 type Function struct {
 	fnv1.UnimplementedFunctionRunnerServiceServer
 
-	vars *template.Template
-	log  logging.Logger
+	prompt *template.Template
+	log    logging.Logger
 }
 
-// NewFunction creates a new function powered by Claude.
+// NewFunction creates a new function powered by GPT.
 func NewFunction(log logging.Logger) *Function {
 	return &Function{
-		log:  log,
-		vars: template.Must(template.New("vars").Parse(vars)),
+		log:    log,
+		prompt: template.Must(template.New("prompt").Parse(prompt)),
 	}
 }
 
 // RunFunction runs the Function.
-func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest) (*fnv1.RunFunctionResponse, error) { //nolint:gocyclo // TODO(negz): Factor out the API calling bits.
+func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest) (*fnv1.RunFunctionResponse, error) {
 	log := f.log.WithValues("tag", req.GetMeta().GetTag())
 	log.Info("Running function", "tag", req.GetMeta().GetTag())
 
@@ -163,13 +154,16 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 
 	c, err := request.GetCredentials(req, credName)
 	if err != nil {
-		response.Fatal(rsp, errors.Wrapf(err, "cannot get Anthropic API key from credential %q", credName))
+		response.Fatal(rsp, errors.Wrapf(err, "cannot get OPEN API API key from credential %q", credName))
 		return rsp, nil
 	}
 	if c.Type != resource.CredentialsTypeData {
 		response.Fatal(rsp, errors.Errorf("expected credential %q to be %q, got %q", credName, resource.CredentialsTypeData, c.Type))
 		return rsp, nil
 	}
+
+	fmt.Println("%+v\n", c)
+
 	b, ok := c.Data[credKey]
 	if !ok {
 		response.Fatal(rsp, errors.Errorf("credential %q is missing required key %q", credName, credKey))
@@ -180,11 +174,7 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 	// coming from? Bug in crossplane render?
 	key := strings.Trim(string(b), "\n")
 
-	// TODO(negz): I'm using YAML as input/output because I assume the model
-	// will be better able to represent Kubernetes stuff as YAML manifests
-	// than as e.g. JSON. YAML's much more prevalent in examples etc. Could
-	// be worth validating this - could we use JSON instead to skip extra
-	// conversion?
+	// TODO(ththornton): possibly switch to just JSON to remove the double encode.
 	xr, err := CompositeToYAML(req.GetObserved().GetComposite())
 	if err != nil {
 		response.Fatal(rsp, errors.Wrap(err, "cannot convert observed XR to YAML"))
@@ -198,149 +188,56 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 	}
 
 	vars := &strings.Builder{}
-	if err := f.vars.Execute(vars, &Variables{Composite: xr, Composed: cds, Input: in.Prompt}); err != nil {
+	if err := f.prompt.Execute(vars, &Variables{Composite: xr, Composed: cds, Input: in.Prompt}); err != nil {
 		response.Fatal(rsp, errors.Wrapf(err, "cannot build prompt from template"))
 		return rsp, nil
 	}
 
 	log.Debug("Using prompt", "prompt", vars.String())
 
-	model, err := openaillm.New(openaillm.WithToken(key))
+	model, err := openaillm.New(
+		openaillm.WithToken(key),
+		// NOTE(tnthornton): gpt-4 is noticeably slow compared to gpt-4o, but
+		// gpt-4o is sending input back that the agent is having trouble
+		// parsing. More to dig into here before switching.
+		openaillm.WithModel("gpt-4"),
+	)
+	if err != nil {
+		response.Fatal(rsp, errors.Wrap(err, "failed to build model"))
+		return rsp, nil
+	}
 
 	agent := agents.NewOneShotAgent(
 		model,
+		// NOTE(tnthornton) Placeholder for future integrations with external Tools.
 		[]tools.Tool{},
 		agents.WithMaxIterations(3),
+		agents.NewOpenAIOption().WithSystemMessage(system),
 	)
 
-	// client := anthropic.NewClient(option.WithAPIKey(key))
-
-	_, err = chains.Run(
+	resp, err := chains.Run(
 		ctx,
 		agents.NewExecutor(agent),
+		vars.String(),
 		chains.WithTemperature(float64(0)),
-		// strings.Join(steps, "\n"),
 	)
 
-	// messages := []anthropic.MessageParam{
-	// 	{
-	// 		Role: anthropic.MessageParamRoleUser,
-	// 		Content: []anthropic.ContentBlockParamUnion{
-	// 			{
-	// 				OfText: &anthropic.TextBlockParam{
-	// 					Text:         prompt,
-	// 					CacheControl: anthropic.NewCacheControlEphemeralParam(),
-	// 				},
-	// 			},
-	// 		},
-	// 	},
-	// 	{
-	// 		Role: anthropic.MessageParamRoleUser,
-	// 		Content: []anthropic.ContentBlockParamUnion{
-	// 			{
-	// 				OfText: &anthropic.TextBlockParam{
-	// 					Text: vars.String(),
-	// 				},
-	// 			},
-	// 		},
-	// 	},
-	// }
-	// for {
-	// message, err := client.Messages.New(ctx, anthropic.MessageNewParams{
-	// 	MaxTokens: 1024,
-	// 	Model:     anthropic.ModelClaudeSonnet4_0,
-	// 	System: []anthropic.TextBlockParam{
-	// 		{
-	// 			Text:         system,
-	// 			CacheControl: anthropic.NewCacheControlEphemeralParam(),
-	// 		},
-	// 	},
-	// 	Temperature: param.Opt[float64]{Value: 0}, // As little randomness as possible.
-	// 	Tools: []anthropic.ToolUnionParam{
-	// 		{
-	// 			OfTool: &anthropic.ToolParam{
-	// 				Name:        submitYAMLName,
-	// 				Description: anthropic.String(submitYAMLDescription),
-	// 				InputSchema: anthropic.ToolInputSchemaParam{
-	// 					Properties: map[string]any{
-	// 						"yaml_stream": map[string]any{
-	// 							"type":        "string",
-	// 							"description": "The YAML stream to submit",
-	// 						},
-	// 					},
-	// 				},
-	// 			},
-	// 		},
-	// 	},
-	// 	Messages: messages,
-	// })
-	// if err != nil {
-	// 	response.Fatal(rsp, errors.Wrapf(err, "cannot message Claude"))
-	// 	return rsp, nil
-	// }
+	if err != nil {
+		response.Fatal(rsp, errors.Wrap(err, "failed to run chain"))
+		return rsp, nil
+	}
 
-	// Save Claude's response, to feed back to it on the next call.
-	// messages = append(messages, message.ToParam())
+	result := ""
+	dcds, err := ComposedFromYAML(strings.TrimPrefix(strings.TrimSpace(resp), "```yaml"))
+	if err != nil {
+		result = err.Error()
+		log.Debug("Submitted YAML stream", "result", result, "isError", true)
+		response.Fatal(rsp, errors.Wrap(err, "did not receive a YAML stream from GPT"))
+	}
 
-	// toolResults := []anthropic.ContentBlockParamUnion{}
-	// for _, block := range message.Content {
-	// 	switch block.AsAny().(type) {
+	log.Debug("Received YAML manifests from GPT", "resourceCount", len(dcds))
+	rsp.Desired.Resources = dcds
 
-	// 	// This could happen several times, as Claude calls the
-	// 	// tool to check whether its YAML is valid.
-	// 	case anthropic.ToolUseBlock:
-	// 		log.Debug("Got tool use block from Claude", "tool_name", block.Name, "tool_input", block.JSON.Input.Raw())
-
-	// 		switch block.Name {
-	// 		case submitYAMLName:
-	// 			y := gjson.Get(block.JSON.Input.Raw(), "yaml_stream").String()
-	// 			if y == "" {
-	// 				response.Fatal(rsp, errors.Errorf("Claude didn't provide 'yaml_stream' input property for %q tool", block.Name))
-	// 				return rsp, nil
-	// 			}
-
-	// 			result := ""
-	// 			dcds, err := ComposedFromYAML(y)
-	// 			if err != nil {
-	// 				result = err.Error()
-
-	// 				log.Debug("Submitted YAML stream", "result", result, "isError", true)
-	// 				toolResults = append(toolResults, anthropic.NewToolResultBlock(block.ID, result, true))
-
-	// 				continue
-	// 			}
-
-	// 			log.Debug("Received YAML manifests from Claude", "resourceCount", len(dcds))
-	// 			rsp.Desired.Resources = dcds
-
-	// 			return rsp, nil
-
-	// 		default:
-	// 			response.Fatal(rsp, errors.Errorf("Claude tried to use unknown tool %q", block.Name))
-	// 			return rsp, nil
-	// 		}
-
-	// 	// Despite the prompt, Claude insists on sending a text
-	// 	// message explaining what it's going to do before it
-	// 	// calls the tool. So this could be called several
-	// 	// times, and only sometimes with YAML.
-	// 	case anthropic.TextBlock:
-	// 		log.Debug("Received text block from Claude", "text", block.Text)
-	// 	}
-	// }
-
-	// Claude's done using tools.
-	// if len(toolResults) == 0 {
-	// 	break
-	// }
-
-	// Claude's not done using tools. Send the messages again, this
-	// time with the tool results.
-	// messages = append(messages, anthropic.NewUserMessage(toolResults...))
-	// }
-
-	// We should never get here.
-	response.Fatal(rsp, errors.New("Claude didn't return a YAML stream of composed resource manifests"))
 	return rsp, nil
 }
 
@@ -386,6 +283,9 @@ func ComposedToYAML(cds map[string]*fnv1.Resource) (string, error) {
 // annotation.
 func ComposedFromYAML(y string) (map[string]*fnv1.Resource, error) {
 	out := make(map[string]*fnv1.Resource)
+
+	y = strings.TrimSuffix(y, "```")
+	fmt.Println(y)
 
 	for _, doc := range strings.Split(y, "---") {
 		if doc == "" {
