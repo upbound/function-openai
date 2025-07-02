@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"text/template"
 
@@ -185,40 +184,15 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 		return rsp, nil
 	}
 
-	vars := &strings.Builder{}
-	if err := f.prompt.Execute(vars, &Variables{Composite: xr, Composed: cds, Input: in.Prompt}); err != nil {
+	prompt := &strings.Builder{}
+	if err := f.prompt.Execute(prompt, &Variables{Composite: xr, Composed: cds, Input: in.Prompt}); err != nil {
 		response.Fatal(rsp, errors.Wrapf(err, "cannot build prompt from template"))
 		return rsp, nil
 	}
 
-	log.Debug("Using prompt", "prompt", vars.String())
+	log.Debug("Using prompt", "prompt", prompt.String())
 
-	model, err := openaillm.New(
-		openaillm.WithToken(key),
-		// NOTE(tnthornton): gpt-4 is noticeably slow compared to gpt-4o, but
-		// gpt-4o is sending input back that the agent is having trouble
-		// parsing. More to dig into here before switching.
-		openaillm.WithModel("gpt-4"),
-	)
-	if err != nil {
-		response.Fatal(rsp, errors.Wrap(err, "failed to build model"))
-		return rsp, nil
-	}
-
-	agent := agents.NewOneShotAgent(
-		model,
-		// NOTE(tnthornton) Placeholder for future integrations with external Tools.
-		[]tools.Tool{},
-		agents.WithMaxIterations(3),
-		agents.NewOpenAIOption().WithSystemMessage(system),
-	)
-
-	resp, err := chains.Run(
-		ctx,
-		agents.NewExecutor(agent),
-		vars.String(),
-		chains.WithTemperature(float64(0)),
-	)
+	resp, err := invokeAgent(ctx, key, prompt.String())
 
 	if err != nil {
 		response.Fatal(rsp, errors.Wrap(err, "failed to run chain"))
@@ -226,7 +200,7 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 	}
 
 	result := ""
-	dcds, err := ComposedFromYAML(strings.TrimPrefix(strings.TrimSpace(resp), "```yaml"))
+	dcds, err := ComposedFromYAML(removeYAMLMarkdown(resp))
 	if err != nil {
 		result = err.Error()
 		log.Debug("Submitted YAML stream", "result", result, "isError", true)
@@ -237,6 +211,35 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 	rsp.Desired.Resources = dcds
 
 	return rsp, nil
+}
+
+// invokeAgent calls the GPT backed agent with the given prompt.
+func invokeAgent(ctx context.Context, key, prompt string) (string, error) {
+	model, err := openaillm.New(
+		openaillm.WithToken(key),
+		// NOTE(tnthornton): gpt-4 is noticeably slow compared to gpt-4o, but
+		// gpt-4o is sending input back that the agent is having trouble
+		// parsing. More to dig into here before switching.
+		openaillm.WithModel("gpt-4"),
+	)
+	if err != nil {
+		return "", errors.Wrap(err, "failed to build model")
+	}
+
+	agent := agents.NewOneShotAgent(
+		model,
+		// NOTE(tnthornton) Placeholder for future integrations with external Tools.
+		[]tools.Tool{},
+		agents.WithMaxIterations(3),
+		agents.NewOpenAIOption().WithSystemMessage(system),
+	)
+
+	return chains.Run(
+		ctx,
+		agents.NewExecutor(agent),
+		prompt,
+		chains.WithTemperature(float64(0)),
+	)
 }
 
 // CompositeToYAML returns the XR as YAML.
@@ -282,9 +285,6 @@ func ComposedToYAML(cds map[string]*fnv1.Resource) (string, error) {
 func ComposedFromYAML(y string) (map[string]*fnv1.Resource, error) {
 	out := make(map[string]*fnv1.Resource)
 
-	y = strings.TrimSuffix(y, "```")
-	fmt.Println(y)
-
 	for _, doc := range strings.Split(y, "---") {
 		if doc == "" {
 			continue
@@ -310,4 +310,14 @@ func ComposedFromYAML(y string) (map[string]*fnv1.Resource, error) {
 	}
 
 	return out, nil
+}
+
+// removeYAMLMarkdown is a helper function for cleaning the output from GPT.
+// The responses can be inconsitent with markdown being returned at times.
+// This function takes a multi-line string containing YAML tags and cleans
+// those for future processing of the YAML stream.
+func removeYAMLMarkdown(in string) string {
+	wsRemoved := strings.TrimSpace(in)
+	yamlPrefix := strings.TrimPrefix(wsRemoved, "```yaml")
+	return strings.TrimSuffix(yamlPrefix, "```")
 }
