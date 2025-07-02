@@ -1,4 +1,4 @@
-// Package v1beta1 contains the input type for this Function
+// Package v1alpha1 contains the input type for this Function
 // +kubebuilder:object:generate=true
 // +groupName=openai.fn.crossplane.io
 // +versionName=v1alpha1

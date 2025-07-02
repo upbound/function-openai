@@ -153,7 +153,7 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 
 	c, err := request.GetCredentials(req, credName)
 	if err != nil {
-		response.Fatal(rsp, errors.Wrapf(err, "cannot get OPEN API API key from credential %q", credName))
+		response.Fatal(rsp, errors.Wrapf(err, "cannot get OPENAI API key from credential %q", credName))
 		return rsp, nil
 	}
 	if c.Type != resource.CredentialsTypeData {
