@@ -32,7 +32,7 @@ func TestRunFunction(t *testing.T) {
 		want   want
 	}{
 		"ResponseIsReturned": {
-			reason: "The Function should return a fatal result if no input was specified",
+			reason: "The Function should return a fatal result if credential cannot be found.",
 			args: args{
 				req: &fnv1.RunFunctionRequest{
 					Meta: &fnv1.RequestMeta{Tag: "hello"},
@@ -48,17 +48,9 @@ func TestRunFunction(t *testing.T) {
 					Meta: &fnv1.ResponseMeta{Tag: "hello", Ttl: durationpb.New(response.DefaultTTL)},
 					Results: []*fnv1.Result{
 						{
-							Severity: fnv1.Severity_SEVERITY_NORMAL,
-							Message:  "I was run with input \"Hello, world\"!",
+							Severity: fnv1.Severity_SEVERITY_FATAL,
+							Message:  `cannot get OPENAI API key from credential "gpt": gpt: credential not found`,
 							Target:   fnv1.Target_TARGET_COMPOSITE.Enum(),
-						},
-					},
-					Conditions: []*fnv1.Condition{
-						{
-							Type:   "FunctionSuccess",
-							Status: fnv1.Status_STATUS_CONDITION_TRUE,
-							Reason: "Success",
-							Target: fnv1.Target_TARGET_COMPOSITE_AND_CLAIM.Enum(),
 						},
 					},
 				},
@@ -68,7 +60,7 @@ func TestRunFunction(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			f := &Function{log: logging.NewNopLogger()}
+			f := NewFunction(logging.NewNopLogger())
 			rsp, err := f.RunFunction(tc.args.ctx, tc.args.req)
 
 			if diff := cmp.Diff(tc.want.rsp, rsp, protocmp.Transform()); diff != "" {
