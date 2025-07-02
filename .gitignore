@@ -22,3 +22,7 @@ go.work
 
 # examples for render
 example/secret.yaml
+
+# up tests
+.up
+up
