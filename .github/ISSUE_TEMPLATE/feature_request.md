@@ -4,7 +4,7 @@ about: Help us make this Function more useful
 labels: enhancement
 ---
 <!--
-Thank you for helping to improve Crossplane!
+Thank you for helping to improve Function OpenAI!
 
 Please be sure to search for open issues before raising a new one. We use issues
 for bug reports and feature requests. Please find us at https://slack.crossplane.io
