@@ -49,7 +49,7 @@ func TestRunFunction(t *testing.T) {
 					Results: []*fnv1.Result{
 						{
 							Severity: fnv1.Severity_SEVERITY_FATAL,
-							Message:  `cannot get OPENAI API key from credential "gpt": gpt: credential not found`,
+							Message:  `cannot get OPENAI_API_KEY from credential "gpt": gpt: credential not found`,
 							Target:   fnv1.Target_TARGET_COMPOSITE.Enum(),
 						},
 					},
