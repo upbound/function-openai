@@ -1,17 +1,30 @@
 apiVersion: apiextensions.crossplane.io/v1
 kind: Composition
 metadata:
-  name: function-openai
+  name: compose-an-app-with-claude
 spec:
   compositeTypeRef:
     apiVersion: example.crossplane.io/v1
-    kind: XR
+    kind: App
   mode: Pipeline
   pipeline:
-  - step: run-the-template
+  - step: make-claude-do-it
     functionRef:
       name: function-openai
     input:
-      apiVersion: template.fn.crossplane.io/v1beta1
-      kind: Input
-      example: "Hello world"
+      apiVersion: openai.fn.upbound.io/v1alpha1
+      kind: Prompt
+      prompt: |
+        Use the resource in the <composite> tag to template a Deployment.
+        Use the value at JSON path .spec.replicas to set the Deployment's
+        replicas. Use the value at JSON path .spec.image to set its
+        container image.
+
+        Create a Service that exposes the Deployment's port 8080.
+    credentials:
+    - name: gpt
+      source: Secret
+      secretRef:
+        namespace: crossplane-system
+        name: gpt
+
