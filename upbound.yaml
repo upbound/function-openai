@@ -1,0 +1,17 @@
+apiVersion: meta.dev.upbound.io/v1alpha1
+kind: Project
+metadata:
+  name: function-openai
+spec:
+  dependsOn:
+  - apiVersion: pkg.crossplane.io/v1
+    kind: Function
+    package: xpkg.upbound.io/upbound/function-openai
+    version: v0.0.1
+  description: function-openai
+  license: Apache-2.0
+  maintainer: Upbound User <user@example.com>
+  readme: |
+    this is only here for compositionTest
+  repository: xpkg.upbound.io/upbound/function-openai
+  source: github.com/upbound/function-openai

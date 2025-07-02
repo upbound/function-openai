@@ -87,6 +87,18 @@ EOF
 ./hack/bin/crossplane render example/xr.yaml example/composition.yaml example/functions.yaml --function-credentials=example/secret.yaml --verbose
 ```
 
+## Running composition tests
+1. Download the `up` CLI. # Currently main is needed due to features tha have 
+not shipped.
+```bash
+curl -sL https://cli.upbound.io | CHANNEL=main sh
+```
+
+2. Run render assertion tests
+```
+./up test run tests/*
+```
+
 [functions]: https://docs.crossplane.io/latest/concepts/composition-functions
 [go]: https://go.dev
 [function guide]: https://docs.crossplane.io/knowledge-base/guides/write-a-composition-function-in-go

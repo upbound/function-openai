@@ -10,7 +10,7 @@ spec:
   pipeline:
   - step: make-gpt-do-it
     functionRef:
-      name: function-openai
+      name: upbound-function-openai
     input:
       apiVersion: openai.fn.upbound.io/v1alpha1
       kind: Prompt
