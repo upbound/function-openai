@@ -1,5 +1,6 @@
 # function-openai
 [![CI](https://github.com/upbound/function-openai/actions/workflows/ci.yml/badge.svg)](https://github.com/upbound/function-openai/actions/workflows/ci.yml)
+[![Slack](https://img.shields.io/badge/slack-upbound_crossplane-purple?logo=slack)](https://slack.crossplane.io)
 
 Use natural language prompts to compose resources.
 
