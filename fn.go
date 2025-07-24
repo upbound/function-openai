@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
+	"html/template"
 	"strings"
-	"text/template"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -30,86 +30,6 @@ const (
 	credKey  = "OPENAI_API_KEY"
 )
 
-const system = `
-You are a Kubernetes templating agent designed to generate and update Kubernetes
-Resource Model (KRM) resources using Kubernetes server-side apply. Your task is
-to create, update, or delete YAML manifests based on the provided composite
-resource and any existing composed resources.
-
-Respond with only valid YAML manifests.
-`
-const prompt = `
-Please keep going until the user's query is completely resolved, before ending
-your turn and yielding back to the user. Only terminate your turn when you are
-sure that the problem is solved.
-
-Please follow these instructions carefully:
-
-1. Analyze the provided composite resource and any existing composed resources.
-
-2. Analyze the input to understand what composed resources you should create,
-   update, or delete. You may be asked to derive composed resources from the
-   composite resource, or from other composed resources.
-
-3. Generate a stream of YAML manifests based on your analysis in steps 1 and 2.
-   Each manifest must:
-   a. Be valid for Kubernetes server-side apply (fully specified intent).
-   b. Omit names and namespaces.
-   c. Include an annotation with the key "upbound.io/name". This annotation
-      must uniquely identify the manifest within the YAML stream. It must be
-      lowercase, hyphen separated, and less than 30 characters long. Prefer
-      to use the manifest's kind. If two or more manifests have the same
-      kind, look for something unique about the manifest and append that to
-      the kind. This annotation is used to match the manifests you return to
-      any manifests that were passed you inside the <composed> tag, so if
-      your intent is to update a manifest never change its "upbound.io/name"
-      annotation. This is critically important.
-   d. If it's necessary to use labels to create relationships between
-      resources, use the name of the composite resource as the label value.
-
-4. If there are existing composed resources:
-    a. You can update an existing composed resource by including it in your
-       output with any changes you deem necessary based on the input. Try to
-       reuse existing composed resource values as much as possible. Only
-       change values when you're sure it's necessary.
-    b. If the input indicates that a resource is no longer required, you can
-       delete it by omitting it from your output.
-
-5. Your output must only be a stream of YAML manifests, each separated by
-   "---".
-
----
-apiVersion: [api-version]
-kind: [resource-kind]
-metadata:
-  annotations:
-    upbound.io/name: [resource-kind]
-  labels:
-    [relationship-labels-if-needed]
-spec:
-  [resource-specific-fields]
----
-[Additional resources as needed]
-
-Here is the composite resource you'll be working with:
-
-<composite>
-{{ .Composite }}
-</composite>
-
-If there are any existing composed resources, they will be provided here:
-
-<composed>
-{{ .Composed }}
-</composed>
-
-Additional input is provided here:
-
-<input>
-{{ .Input }}
-</input>
-`
-
 // Variables used to form the prompt.
 type Variables struct {
 	// Observed composite resource, as a YAML manifest.
@@ -117,24 +37,19 @@ type Variables struct {
 
 	// Observed composed resources, as a stream of YAML manifests.
 	Composed string
-
-	// Input - i.e. user prompt.
-	Input string
 }
 
 // Function asks GPT to compose resources.
 type Function struct {
 	fnv1.UnimplementedFunctionRunnerServiceServer
 
-	prompt *template.Template
-	log    logging.Logger
+	log logging.Logger
 }
 
 // NewFunction creates a new function powered by GPT.
 func NewFunction(log logging.Logger) *Function {
 	return &Function{
-		log:    log,
-		prompt: template.Must(template.New("prompt").Parse(prompt)),
+		log: log,
 	}
 }
 
@@ -171,6 +86,12 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 	// coming from? Bug in crossplane render?
 	key := strings.Trim(string(b), "\n")
 
+	userPrompt, err := template.New("prompt").Parse(in.UserPrompt)
+	if err != nil {
+		response.Fatal(rsp, errors.Wrap(err, "cannot parse userPrompt"))
+		return rsp, nil
+	}
+
 	// TODO(ththornton): possibly switch to just JSON to remove the double encode.
 	xr, err := CompositeToYAML(req.GetObserved().GetComposite())
 	if err != nil {
@@ -185,14 +106,14 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 	}
 
 	prompt := &strings.Builder{}
-	if err := f.prompt.Execute(prompt, &Variables{Composite: xr, Composed: cds, Input: in.Prompt}); err != nil {
+	if err := userPrompt.Execute(prompt, &Variables{Composite: xr, Composed: cds}); err != nil {
 		response.Fatal(rsp, errors.Wrapf(err, "cannot build prompt from template"))
 		return rsp, nil
 	}
 
 	log.Debug("Using prompt", "prompt", prompt.String())
 
-	resp, err := invokeAgent(ctx, key, prompt.String())
+	resp, err := invokeAgent(ctx, key, in.SystemPrompt, prompt.String())
 
 	if err != nil {
 		response.Fatal(rsp, errors.Wrap(err, "failed to run chain"))
@@ -214,7 +135,7 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 }
 
 // invokeAgent calls the GPT backed agent with the given prompt.
-func invokeAgent(ctx context.Context, key, prompt string) (string, error) {
+func invokeAgent(ctx context.Context, key, system, prompt string) (string, error) {
 	model, err := openaillm.New(
 		openaillm.WithToken(key),
 		// NOTE(tnthornton): gpt-4 is noticeably slow compared to gpt-4o, but
