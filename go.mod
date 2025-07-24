@@ -1,12 +1,12 @@
 module github.com/upbound/function-openai
 
-go 1.23.8
+go 1.24
 
-toolchain go1.23.10
+toolchain go1.24.4
 
 require (
 	github.com/alecthomas/kong v1.4.0
-	github.com/crossplane/function-sdk-go v0.4.0
+	github.com/crossplane/function-sdk-go v0.5.0-rc.0.0.20250715215746-ca27889cd196
 	github.com/google/go-cmp v0.7.0
 	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/sjson v1.2.5
