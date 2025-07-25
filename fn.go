@@ -85,53 +85,20 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 	// TODO(negz): Where the heck is the newline at the end of this key
 	// coming from? Bug in crossplane render?
 	key := strings.Trim(string(b), "\n")
-
-	userPrompt, err := template.New("prompt").Parse(in.UserPrompt)
-	if err != nil {
-		response.Fatal(rsp, errors.Wrap(err, "cannot parse userPrompt"))
-		return rsp, nil
+	d := pipelineDetails{
+		req:  req,
+		rsp:  rsp,
+		in:   in,
+		cred: key,
 	}
 
-	// TODO(ththornton): possibly switch to just JSON to remove the double encode.
-	xr, err := CompositeToYAML(req.GetObserved().GetComposite())
-	if err != nil {
-		response.Fatal(rsp, errors.Wrap(err, "cannot convert observed XR to YAML"))
-		return rsp, nil
+	// If we're in a composition pipeline we want to do things with the
+	// composed resources.
+	if inCompositionPipeline(req) {
+		return compositionPipeline(ctx, log, d)
 	}
-
-	cds, err := ComposedToYAML(req.GetObserved().GetResources())
-	if err != nil {
-		response.Fatal(rsp, errors.Wrap(err, "cannot convert observed composed resources to YAML"))
-		return rsp, nil
-	}
-
-	prompt := &strings.Builder{}
-	if err := userPrompt.Execute(prompt, &Variables{Composite: xr, Composed: cds}); err != nil {
-		response.Fatal(rsp, errors.Wrapf(err, "cannot build prompt from template"))
-		return rsp, nil
-	}
-
-	log.Debug("Using prompt", "prompt", prompt.String())
-
-	resp, err := invokeAgent(ctx, key, in.SystemPrompt, prompt.String())
-
-	if err != nil {
-		response.Fatal(rsp, errors.Wrap(err, "failed to run chain"))
-		return rsp, nil
-	}
-
-	result := ""
-	dcds, err := ComposedFromYAML(removeYAMLMarkdown(resp))
-	if err != nil {
-		result = err.Error()
-		log.Debug("Submitted YAML stream", "result", result, "isError", true)
-		response.Fatal(rsp, errors.Wrap(err, "did not receive a YAML stream from GPT"))
-	}
-
-	log.Debug("Received YAML manifests from GPT", "resourceCount", len(dcds))
-	rsp.Desired.Resources = dcds
-
-	return rsp, nil
+	// Handle operation pipeline separately.
+	return operationPipeline(ctx, log, d)
 }
 
 // invokeAgent calls the GPT backed agent with the given prompt.
@@ -241,4 +208,92 @@ func removeYAMLMarkdown(in string) string {
 	wsRemoved := strings.TrimSpace(in)
 	yamlPrefix := strings.TrimPrefix(wsRemoved, "```yaml")
 	return strings.TrimSuffix(yamlPrefix, "```")
+}
+
+// attempts to identify if the function is operating within a composition
+// pipeline or not by looking to see if a composite was sent with the request.
+func inCompositionPipeline(req *fnv1.RunFunctionRequest) bool {
+	return req.GetObserved().GetComposite() != nil
+}
+
+// pipelineDetails wraps the inputs and outputs for the given function run.
+type pipelineDetails struct {
+	// FunctionRequest
+	req *fnv1.RunFunctionRequest
+	// FunctionResponse
+	rsp *fnv1.RunFunctionResponse
+	// marshalled input
+	in *v1alpha1.Prompt
+	// LLM API credential
+	cred string
+}
+
+// compositionPipeline processes the given pipelineDetails with the assumption
+// that the function is defined in a composition pipeline and will be working
+// with composites and desired resources.
+func compositionPipeline(ctx context.Context, log logging.Logger, d pipelineDetails) (*fnv1.RunFunctionResponse, error) {
+	userPrompt, err := template.New("prompt").Parse(d.in.UserPrompt)
+	if err != nil {
+		response.Fatal(d.rsp, errors.Wrap(err, "cannot parse userPrompt"))
+		return d.rsp, nil
+	}
+
+	// TODO(ththornton): possibly switch to just JSON to remove the double encode.
+	xr, err := CompositeToYAML(d.req.GetObserved().GetComposite())
+	if err != nil {
+		response.Fatal(d.rsp, errors.Wrap(err, "cannot convert observed XR to YAML"))
+		return d.rsp, nil
+	}
+
+	cds, err := ComposedToYAML(d.req.GetObserved().GetResources())
+	if err != nil {
+		response.Fatal(d.rsp, errors.Wrap(err, "cannot convert observed composed resources to YAML"))
+		return d.rsp, nil
+	}
+
+	pb := &strings.Builder{}
+	if err := userPrompt.Execute(pb, &Variables{Composite: xr, Composed: cds}); err != nil {
+		response.Fatal(d.rsp, errors.Wrapf(err, "cannot build prompt from template"))
+		return d.rsp, nil
+	}
+
+	log.Debug("Using prompt", "prompt", pb.String())
+
+	resp, err := invokeAgent(ctx, d.cred, d.in.SystemPrompt, pb.String())
+
+	if err != nil {
+		response.Fatal(d.rsp, errors.Wrap(err, "failed to run chain"))
+		return d.rsp, nil
+	}
+
+	result := ""
+	dcds, err := ComposedFromYAML(removeYAMLMarkdown(resp))
+	if err != nil {
+		result = err.Error()
+		log.Debug("Submitted YAML stream", "result", result, "isError", true)
+		response.Fatal(d.rsp, errors.Wrap(err, "did not receive a YAML stream from GPT"))
+	}
+
+	log.Debug("Received YAML manifests from GPT", "resourceCount", len(dcds))
+	d.rsp.Desired.Resources = dcds
+	return d.rsp, nil
+}
+
+// operationPipeline processes the given pipelineDetails with the assumption
+// that the function is defined in an operations pipeline.
+func operationPipeline(ctx context.Context, log logging.Logger, d pipelineDetails) (*fnv1.RunFunctionResponse, error) {
+	prompt := d.in.UserPrompt
+
+	log.Debug("Using prompt", "prompt", prompt)
+
+	resp, err := invokeAgent(ctx, d.cred, d.in.SystemPrompt, prompt)
+
+	if err != nil {
+		response.Fatal(d.rsp, errors.Wrap(err, "failed to run chain"))
+		return d.rsp, nil
+	}
+
+	response.ConditionTrue(d.rsp, "FunctionSuccess", "Success").TargetCompositeAndClaim()
+	response.Normal(d.rsp, resp)
+	return d.rsp, nil
 }
