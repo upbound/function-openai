@@ -146,7 +146,7 @@ EOF
 ```
 
 ## Running composition tests
-1. Download the `up` CLI. # Currently main is needed due to features tha have 
+1. Download the `up` CLI. # Currently main is needed due to features that have 
 not shipped.
 ```bash
 curl -sL https://cli.upbound.io | CHANNEL=main sh

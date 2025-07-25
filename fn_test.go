@@ -159,6 +159,15 @@ metadata:
 						"userPrompt": "I'm a user"
 					}`),
 					Credentials: mockCredentials(),
+					RequiredResources: map[string]*fnv1.Resources{
+						"ops.crossplane.io/watched-resource": {
+							Items: []*fnv1.Resource{
+								{
+									Resource: &structpb.Struct{},
+								},
+							},
+						},
+					},
 				},
 			},
 			want: want{

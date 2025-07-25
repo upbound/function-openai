@@ -169,7 +169,7 @@ jobs:
         with:
           skip-login: true
           channel: main
-          version: v0.39.0-87.g20595f83 # we need compositionTests with functionCredentialsPath
+          version: v0.39.0-384.g0a0c8634 # we need compositionTests with functionCredentialsPath
       - name: Update package version in upbound.yaml
         run: | 
           sed -i "s/version: v0.0.1/version: ${{ env.XPKG_VERSION }}/" upbound.yaml
@@ -187,3 +187,6 @@ jobs:
           EOF
         env:
           OPENAI_API_KEY_B64: ${{ secrets.OPENAI_API_KEY_B64 }}
+
+      - name: Run composition tests
+        run: up test run tests/*
