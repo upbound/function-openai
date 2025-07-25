@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"html/template"
 	"strings"
 
@@ -261,7 +263,33 @@ func (f *Function) compositionPipeline(ctx context.Context, log logging.Logger, 
 // operationPipeline processes the given pipelineDetails with the assumption
 // that the function is defined in an operations pipeline.
 func (f *Function) operationPipeline(ctx context.Context, log logging.Logger, d pipelineDetails) (*fnv1.RunFunctionResponse, error) {
-	prompt := d.in.UserPrompt
+	rr, err := request.GetRequiredResources(d.req)
+	if err != nil {
+		response.Fatal(d.rsp, errors.Wrapf(err, "cannot get Function extra resources from %T", d.req))
+		return d.rsp, err
+	}
+
+	// TODO(tnthornton) reference const from c/c instead. Currently too many
+	// conflicting dependencies are pulled in when updating c/c in this repo.
+	rs, ok := rr["ops.crossplane.io/watched-resource"]
+	if !ok {
+		f.log.Debug("no resource to process")
+		response.ConditionTrue(d.rsp, "FunctionSuccess", "Success").TargetCompositeAndClaim()
+		return d.rsp, nil
+	}
+
+	if len(rs) != 1 {
+		response.Fatal(d.rsp, errors.New("too many resources sent to the function. expected 1"))
+		return d.rsp, nil
+	}
+
+	rb, err := json.Marshal(rs[0].Resource.UnstructuredContent())
+	if err != nil {
+		response.Fatal(d.rsp, errors.New("failed to unmarshal required resource"))
+		return d.rsp, err
+	}
+
+	prompt := fmt.Sprintf("%s\n%s", d.in.UserPrompt, string(rb))
 
 	log.Debug("Using prompt", "prompt", prompt)
 
@@ -269,7 +297,7 @@ func (f *Function) operationPipeline(ctx context.Context, log logging.Logger, d 
 
 	if err != nil {
 		response.Fatal(d.rsp, errors.Wrap(err, "failed to run chain"))
-		return d.rsp, nil
+		return d.rsp, err
 	}
 
 	response.ConditionTrue(d.rsp, "FunctionSuccess", "Success").TargetCompositeAndClaim()
