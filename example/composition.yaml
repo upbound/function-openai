@@ -14,13 +14,15 @@ spec:
     input:
       apiVersion: openai.fn.upbound.io/v1alpha1
       kind: Prompt
-      prompt: |
+      systemPrompt: |
         Use the resource in the <composite> tag to template a Deployment.
         Use the value at JSON path .spec.replicas to set the Deployment's
         replicas. Use the value at JSON path .spec.image to set its
         container image.
 
         Create a Service that exposes the Deployment's port 8080.
+      userPrompt: |
+        ""
     credentials:
     - name: gpt
       source: Secret
