@@ -42,13 +42,21 @@ type Variables struct {
 // Function asks GPT to compose resources.
 type Function struct {
 	fnv1.UnimplementedFunctionRunnerServiceServer
+	ai agentInvoker
 
 	log logging.Logger
+}
+
+// agentInvoker is a consumer interface for working with agents. Notably this
+// is helpful for writing tests that mock the agent invocations.
+type agentInvoker interface {
+	Invoke(ctx context.Context, key, system, prompt string) (string, error)
 }
 
 // NewFunction creates a new function powered by GPT.
 func NewFunction(log logging.Logger) *Function {
 	return &Function{
+		ai:  &agent{},
 		log: log,
 	}
 }
@@ -95,39 +103,10 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 	// If we're in a composition pipeline we want to do things with the
 	// composed resources.
 	if inCompositionPipeline(req) {
-		return compositionPipeline(ctx, log, d)
+		return f.compositionPipeline(ctx, log, d)
 	}
 	// Handle operation pipeline separately.
-	return operationPipeline(ctx, log, d)
-}
-
-// invokeAgent calls the GPT backed agent with the given prompt.
-func invokeAgent(ctx context.Context, key, system, prompt string) (string, error) {
-	model, err := openaillm.New(
-		openaillm.WithToken(key),
-		// NOTE(tnthornton): gpt-4 is noticeably slow compared to gpt-4o, but
-		// gpt-4o is sending input back that the agent is having trouble
-		// parsing. More to dig into here before switching.
-		openaillm.WithModel("gpt-4"),
-	)
-	if err != nil {
-		return "", errors.Wrap(err, "failed to build model")
-	}
-
-	agent := agents.NewOneShotAgent(
-		model,
-		// NOTE(tnthornton) Placeholder for future integrations with external Tools.
-		[]tools.Tool{},
-		agents.WithMaxIterations(3),
-		agents.NewOpenAIOption().WithSystemMessage(system),
-	)
-
-	return chains.Run(
-		ctx,
-		agents.NewExecutor(agent),
-		prompt,
-		chains.WithTemperature(float64(0)),
-	)
+	return f.operationPipeline(ctx, log, d)
 }
 
 // CompositeToYAML returns the XR as YAML.
@@ -173,7 +152,7 @@ func ComposedToYAML(cds map[string]*fnv1.Resource) (string, error) {
 func ComposedFromYAML(y string) (map[string]*fnv1.Resource, error) {
 	out := make(map[string]*fnv1.Resource)
 
-	for _, doc := range strings.Split(y, "---") {
+	for doc := range strings.SplitSeq(y, "---") {
 		if doc == "" {
 			continue
 		}
@@ -231,7 +210,7 @@ type pipelineDetails struct {
 // compositionPipeline processes the given pipelineDetails with the assumption
 // that the function is defined in a composition pipeline and will be working
 // with composites and desired resources.
-func compositionPipeline(ctx context.Context, log logging.Logger, d pipelineDetails) (*fnv1.RunFunctionResponse, error) {
+func (f *Function) compositionPipeline(ctx context.Context, log logging.Logger, d pipelineDetails) (*fnv1.RunFunctionResponse, error) {
 	userPrompt, err := template.New("prompt").Parse(d.in.UserPrompt)
 	if err != nil {
 		response.Fatal(d.rsp, errors.Wrap(err, "cannot parse userPrompt"))
@@ -259,7 +238,7 @@ func compositionPipeline(ctx context.Context, log logging.Logger, d pipelineDeta
 
 	log.Debug("Using prompt", "prompt", pb.String())
 
-	resp, err := invokeAgent(ctx, d.cred, d.in.SystemPrompt, pb.String())
+	resp, err := f.ai.Invoke(ctx, d.cred, d.in.SystemPrompt, pb.String())
 
 	if err != nil {
 		response.Fatal(d.rsp, errors.Wrap(err, "failed to run chain"))
@@ -281,12 +260,12 @@ func compositionPipeline(ctx context.Context, log logging.Logger, d pipelineDeta
 
 // operationPipeline processes the given pipelineDetails with the assumption
 // that the function is defined in an operations pipeline.
-func operationPipeline(ctx context.Context, log logging.Logger, d pipelineDetails) (*fnv1.RunFunctionResponse, error) {
+func (f *Function) operationPipeline(ctx context.Context, log logging.Logger, d pipelineDetails) (*fnv1.RunFunctionResponse, error) {
 	prompt := d.in.UserPrompt
 
 	log.Debug("Using prompt", "prompt", prompt)
 
-	resp, err := invokeAgent(ctx, d.cred, d.in.SystemPrompt, prompt)
+	resp, err := f.ai.Invoke(ctx, d.cred, d.in.SystemPrompt, prompt)
 
 	if err != nil {
 		response.Fatal(d.rsp, errors.Wrap(err, "failed to run chain"))
@@ -296,4 +275,36 @@ func operationPipeline(ctx context.Context, log logging.Logger, d pipelineDetail
 	response.ConditionTrue(d.rsp, "FunctionSuccess", "Success").TargetCompositeAndClaim()
 	response.Normal(d.rsp, resp)
 	return d.rsp, nil
+}
+
+type agent struct{}
+
+// Invoke makes an external call to the configured LLM with the supplied
+// credential key, system and user prompts.
+func (a *agent) Invoke(ctx context.Context, key, system, prompt string) (string, error) {
+	model, err := openaillm.New(
+		openaillm.WithToken(key),
+		// NOTE(tnthornton): gpt-4 is noticeably slow compared to gpt-4o, but
+		// gpt-4o is sending input back that the agent is having trouble
+		// parsing. More to dig into here before switching.
+		openaillm.WithModel("gpt-4"),
+	)
+	if err != nil {
+		return "", errors.Wrap(err, "failed to build model")
+	}
+
+	agent := agents.NewOneShotAgent(
+		model,
+		// NOTE(tnthornton) Placeholder for future integrations with external Tools.
+		[]tools.Tool{},
+		agents.WithMaxIterations(3),
+		agents.NewOpenAIOption().WithSystemMessage(system),
+	)
+
+	return chains.Run(
+		ctx,
+		agents.NewExecutor(agent),
+		prompt,
+		chains.WithTemperature(float64(0)),
+	)
 }

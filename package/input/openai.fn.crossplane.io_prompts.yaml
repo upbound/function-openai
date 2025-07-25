@@ -38,11 +38,15 @@ spec:
             type: string
           metadata:
             type: object
-          prompt:
-            description: Prompt to send to GPT.
+          systemPrompt:
+            description: SystemPrompt to send to GPT.
+            type: string
+          userPrompt:
+            description: UserPrompt to send to GPT.
             type: string
         required:
-        - prompt
+        - systemPrompt
+        - userPrompt
         type: object
     served: true
     storage: true
