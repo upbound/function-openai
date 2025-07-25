@@ -3,4 +3,8 @@ apiVersion: meta.pkg.crossplane.io/v1beta1
 kind: Function
 metadata:
   name: function-openai
-spec: {}
+spec:
+  # Can work with either compositions or operations.
+  capabilities:
+  - composition
+  - operation
