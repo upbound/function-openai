@@ -57,6 +57,7 @@ func TestRunFunction(t *testing.T) {
 						},
 					},
 				},
+				err: cmpopts.AnyError,
 			},
 		},
 		"SimpleCompositionPipeline": {

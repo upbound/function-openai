@@ -54,6 +54,7 @@ spec:
                delete it by omitting it from your output.
         5. Your output must only be a stream of YAML manifests, each separated by
            "---".
+
         ---
         apiVersion: [api-version]
         kind: [resource-kind]
@@ -66,6 +67,7 @@ spec:
           [resource-specific-fields]
         ---
         [Additional resources as needed]
+
         Here is the composite resource you'll be working with:
         <composite>
         {{ .Composite }}

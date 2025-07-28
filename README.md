@@ -116,6 +116,27 @@ $ docker build . --tag=runtime
 $ crossplane xpkg build -f package --embed-runtime-image=runtime
 ```
 
+## Go Template Input support
+### Composition Pipeline
+For `Input`'s using prompts targetting compositions, the following variables
+are available:
+```
+{{ .Composed }}
+{{ .Composite }}
+```
+
+Including these variables in your prompt will result in the variables being
+replaced by the composed and composite resources progressing through the pipleline.
+
+### Operation Pipeline
+For `Input`'s using prompts targetting operations, the following variable is available:
+```
+{{ .Resources }}
+```
+
+Including this variable in your prompt will result in the variable being
+replaced by the required resource supplied to the function.
+
 ## Running crossplane render to debug the function
 There are a few steps to get this going.
 
