@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.5
-  name: prompts.openai.fn.crossplane.io
+  name: prompts.openai.fn.upbound.io
 spec:
-  group: openai.fn.crossplane.io
+  group: openai.fn.upbound.io
   names:
     categories:
     - crossplane

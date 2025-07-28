@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"html/template"
 	"strings"
 
@@ -73,23 +72,23 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 	in := &v1alpha1.Prompt{}
 	if err := request.GetInput(req, in); err != nil {
 		response.Fatal(rsp, errors.Wrapf(err, "cannot get Function input from %T", req))
-		return rsp, nil
+		return rsp, err
 	}
 
 	c, err := request.GetCredentials(req, credName)
 	if err != nil {
 		response.Fatal(rsp, errors.Wrapf(err, "cannot get OPENAI_API_KEY from credential %q", credName))
-		return rsp, nil
+		return rsp, err
 	}
 	if c.Type != resource.CredentialsTypeData {
 		response.Fatal(rsp, errors.Errorf("expected credential %q to be %q, got %q", credName, resource.CredentialsTypeData, c.Type))
-		return rsp, nil
+		return rsp, err
 	}
 
 	b, ok := c.Data[credKey]
 	if !ok {
 		response.Fatal(rsp, errors.Errorf("credential %q is missing required key %q", credName, credKey))
-		return rsp, nil
+		return rsp, err
 	}
 
 	// TODO(negz): Where the heck is the newline at the end of this key
@@ -216,26 +215,26 @@ func (f *Function) compositionPipeline(ctx context.Context, log logging.Logger, 
 	userPrompt, err := template.New("prompt").Parse(d.in.UserPrompt)
 	if err != nil {
 		response.Fatal(d.rsp, errors.Wrap(err, "cannot parse userPrompt"))
-		return d.rsp, nil
+		return d.rsp, err
 	}
 
 	// TODO(ththornton): possibly switch to just JSON to remove the double encode.
 	xr, err := CompositeToYAML(d.req.GetObserved().GetComposite())
 	if err != nil {
 		response.Fatal(d.rsp, errors.Wrap(err, "cannot convert observed XR to YAML"))
-		return d.rsp, nil
+		return d.rsp, err
 	}
 
 	cds, err := ComposedToYAML(d.req.GetObserved().GetResources())
 	if err != nil {
 		response.Fatal(d.rsp, errors.Wrap(err, "cannot convert observed composed resources to YAML"))
-		return d.rsp, nil
+		return d.rsp, err
 	}
 
 	pb := &strings.Builder{}
 	if err := userPrompt.Execute(pb, &Variables{Composite: xr, Composed: cds}); err != nil {
 		response.Fatal(d.rsp, errors.Wrapf(err, "cannot build prompt from template"))
-		return d.rsp, nil
+		return d.rsp, err
 	}
 
 	log.Debug("Using prompt", "prompt", pb.String())
@@ -244,7 +243,7 @@ func (f *Function) compositionPipeline(ctx context.Context, log logging.Logger, 
 
 	if err != nil {
 		response.Fatal(d.rsp, errors.Wrap(err, "failed to run chain"))
-		return d.rsp, nil
+		return d.rsp, err
 	}
 
 	result := ""
@@ -253,6 +252,7 @@ func (f *Function) compositionPipeline(ctx context.Context, log logging.Logger, 
 		result = err.Error()
 		log.Debug("Submitted YAML stream", "result", result, "isError", true)
 		response.Fatal(d.rsp, errors.Wrap(err, "did not receive a YAML stream from GPT"))
+		return d.rsp, err
 	}
 
 	log.Debug("Received YAML manifests from GPT", "resourceCount", len(dcds))
@@ -260,9 +260,15 @@ func (f *Function) compositionPipeline(ctx context.Context, log logging.Logger, 
 	return d.rsp, nil
 }
 
+type OperationVariables struct {
+	Input     string `json:"input"`
+	Resources string `json:"resources"`
+}
+
 // operationPipeline processes the given pipelineDetails with the assumption
 // that the function is defined in an operations pipeline.
 func (f *Function) operationPipeline(ctx context.Context, log logging.Logger, d pipelineDetails) (*fnv1.RunFunctionResponse, error) {
+	prompt, err := template.New("prompt").Parse(d.in.UserPrompt)
 	rr, err := request.GetRequiredResources(d.req)
 	if err != nil {
 		response.Fatal(d.rsp, errors.Wrapf(err, "cannot get Function extra resources from %T", d.req))
@@ -280,20 +286,24 @@ func (f *Function) operationPipeline(ctx context.Context, log logging.Logger, d 
 
 	if len(rs) != 1 {
 		response.Fatal(d.rsp, errors.New("too many resources sent to the function. expected 1"))
-		return d.rsp, nil
+		return d.rsp, err
 	}
 
-	rb, err := json.Marshal(rs[0].Resource.UnstructuredContent())
+	rb, err := json.MarshalIndent(rs[0].Resource.UnstructuredContent(), "", "    ")
 	if err != nil {
 		response.Fatal(d.rsp, errors.New("failed to unmarshal required resource"))
 		return d.rsp, err
 	}
 
-	prompt := fmt.Sprintf("%s\n%s", d.in.UserPrompt, string(rb))
+	vars := &strings.Builder{}
+	if err := prompt.Execute(vars, &OperationVariables{Input: d.in.UserPrompt, Resources: string(rb)}); err != nil {
+		response.Fatal(d.rsp, errors.Wrapf(err, "cannot build prompt from template"))
+		return d.rsp, err
+	}
 
-	log.Debug("Using prompt", "prompt", prompt)
+	log.Debug("Using prompt", "prompt", vars.String())
 
-	resp, err := f.ai.Invoke(ctx, d.cred, d.in.SystemPrompt, prompt)
+	resp, err := f.ai.Invoke(ctx, d.cred, d.in.SystemPrompt, vars.String())
 
 	if err != nil {
 		response.Fatal(d.rsp, errors.Wrap(err, "failed to run chain"))
