@@ -141,6 +141,7 @@ jobs:
   # This job downloads the single-platform packages built by the build job, and
   # pushes them as a multi-platform package.
   push:
+    if: ${{ github.actor != 'dependabot[bot]' && !contains(github.ref, 'release-') }} 
     runs-on: ubuntu-24.04
     needs:
       - build
