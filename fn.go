@@ -40,6 +40,7 @@ import (
 	"github.com/crossplane/function-sdk-go/response"
 
 	"github.com/upbound/function-openai/input/v1alpha1"
+	"github.com/upbound/function-openai/internal/tool"
 )
 
 const (
@@ -70,12 +71,32 @@ type agentInvoker interface {
 	Invoke(ctx context.Context, key, system, prompt string) (string, error)
 }
 
-// NewFunction creates a new function powered by GPT.
-func NewFunction(log logging.Logger) *Function {
-	return &Function{
-		ai:  &agent{},
-		log: log,
+// Option modifies the underlying Function.
+type Option func(*Function)
+
+// WithLogger overrides the default logger.
+func WithLogger(log logging.Logger) Option {
+	return func(f *Function) {
+		f.log = log
 	}
+}
+
+// NewFunction creates a new function powered by GPT.
+func NewFunction(opts ...Option) *Function {
+	f := &Function{
+		log: logging.NewNopLogger(),
+	}
+
+	for _, o := range opts {
+		o(f)
+	}
+
+	f.ai = &agent{
+		log: f.log,
+		res: tool.NewResolver(tool.WithLogger(f.log)),
+	}
+
+	return f
 }
 
 // RunFunction runs the Function.
@@ -84,6 +105,12 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 	log.Info("Running function", "tag", req.GetMeta().GetTag())
 
 	rsp := response.To(req, response.DefaultTTL)
+
+	if f.shouldIgnore(req) {
+		response.ConditionTrue(rsp, "FunctionSuccess", "Success").TargetCompositeAndClaim()
+		response.Normal(rsp, "received an ignored resource, skipping")
+		return rsp, nil
+	}
 
 	in := &v1alpha1.Prompt{}
 	if err := request.GetInput(req, in); err != nil {
@@ -204,6 +231,32 @@ func removeYAMLMarkdown(in string) string {
 	wsRemoved := strings.TrimSpace(in)
 	yamlPrefix := strings.TrimPrefix(wsRemoved, "```yaml")
 	return strings.TrimSuffix(yamlPrefix, "```")
+}
+
+// resourceFrom produces a map of resource name to resources derived from the
+// given string. If the string is neither JSON nor YAML, an error is returned.
+func (f *Function) resourceFrom(i string) (map[string]*fnv1.Resource, error) {
+	out := make(map[string]*fnv1.Resource)
+
+	b := []byte(i)
+
+	// Is i YAML?
+	jb, err := yaml.YAMLToJSON(b)
+	if err != nil {
+		f.log.Debug("error seen while attempting to convert YAML to JSON", "error", err)
+		// i doesn't appear to be YAML, maybe it's JSON...
+		jb = b
+	}
+
+	s := &structpb.Struct{}
+	if err := protojson.Unmarshal(jb, s); err != nil {
+		return nil, errors.Wrap(err, "cannot parse JSON")
+	}
+
+	name := gjson.GetBytes(jb, "metadata.name").String()
+	out[name] = &fnv1.Resource{Resource: s}
+
+	return out, nil
 }
 
 // attempts to identify if the function is operating within a composition
@@ -331,12 +384,37 @@ func (f *Function) operationPipeline(ctx context.Context, log logging.Logger, d 
 		return d.rsp, err
 	}
 
+	desired, err := f.resourceFrom(resp)
+	if err != nil {
+		// we didn't get a JSON based response from GPT
+		log.Debug("failed to get a JSON response back, no desired resources will be sent back to crossplane")
+	}
+
 	response.ConditionTrue(d.rsp, "FunctionSuccess", "Success").TargetCompositeAndClaim()
 	response.Normal(d.rsp, resp)
+
+	d.rsp.Desired.Resources = desired
 	return d.rsp, nil
 }
 
-type agent struct{}
+// shouldIgnore returns true if the caller has communicated that the resource
+// is an ignored resource. False otherwise.
+func (f *Function) shouldIgnore(req *fnv1.RunFunctionRequest) bool {
+	fctx := req.GetContext()
+	ignored, ok := fctx.AsMap()["ops.upbound.io/ignored-resource"]
+	if ok {
+		i, ok := ignored.(bool)
+		if ok && i {
+			return true
+		}
+	}
+	return false
+}
+
+type agent struct {
+	log logging.Logger
+	res *tool.Resolver
+}
 
 // Invoke makes an external call to the configured LLM with the supplied
 // credential key, system and user prompts.
@@ -354,9 +432,8 @@ func (a *agent) Invoke(ctx context.Context, key, system, prompt string) (string,
 
 	agent := agents.NewOneShotAgent(
 		model,
-		// NOTE(tnthornton) Placeholder for future integrations with external Tools.
-		[]tools.Tool{},
-		agents.WithMaxIterations(3),
+		a.tools(ctx),
+		agents.WithMaxIterations(20),
 		agents.NewOpenAIOption().WithSystemMessage(system),
 	)
 
@@ -366,4 +443,12 @@ func (a *agent) Invoke(ctx context.Context, key, system, prompt string) (string,
 		prompt,
 		chains.WithTemperature(float64(0)),
 	)
+}
+
+func (a *agent) tools(ctx context.Context) []tools.Tool {
+	cfgs := a.res.FromEnvVars()
+	if len(cfgs) == 0 {
+		a.log.Debug("no valid mcp server configurations found")
+	}
+	return a.res.Resolve(ctx, cfgs)
 }
