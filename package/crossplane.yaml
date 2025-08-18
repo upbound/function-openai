@@ -3,6 +3,9 @@ apiVersion: meta.pkg.crossplane.io/v1
 kind: Function
 metadata:
   name: function-openai
+  annotations:
+    meta.crossplane.io/source: github.com/upbound/function-openai
+    meta.crossplane.io/license: Apache-2.0
 spec:
   # Can work with either compositions or operations.
   capabilities:
