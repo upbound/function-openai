@@ -167,6 +167,7 @@ jobs:
 
       - name: Login to Upbound Marketplace
         uses: docker/login-action@v3
+        if: env.XPKG_ACCESS_ID != ''
         with:
           registry: xpkg.upbound.io
           username: ${{ secrets.XPKG_ACCESS_ID }}
@@ -181,6 +182,7 @@ jobs:
         run: echo "XPKG_VERSION=v0.0.0-$(date -d@$(git show -s --format=%ct) +%Y%m%d%H%M%S)-$(git rev-parse --short=12 HEAD)" >> $GITHUB_ENV
 
       - name: Push Multi-Platform Package to GitHub Container Registry
+        if: env.XPKG_ACCESS_ID != ''
         # XPKG repo name can't contain uppercase characters like UpboundCare, we need to lowercase if the GithubOrg contains them.
         # See https://github.com/orgs/community/discussions/25768#discussioncomment-8057564 for XPKG@L lowercase explanation
         run: "./crossplane --verbose xpkg push --package-files $(echo *.xpkg|tr ' ' ,) ${XPKG@L}:${{ env.XPKG_VERSION }}"
@@ -210,4 +212,5 @@ jobs:
           OPENAI_API_KEY_B64: ${{ secrets.OPENAI_API_KEY_B64 }}
 
       - name: Run composition tests
+        if: env.XPKG_ACCESS_ID != ''
         run: up test run tests/*
