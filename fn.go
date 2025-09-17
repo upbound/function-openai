@@ -44,8 +44,11 @@ import (
 )
 
 const (
-	credName = "gpt"
-	credKey  = "OPENAI_API_KEY"
+	credName        = "gpt"
+	credKey         = "OPENAI_API_KEY"
+	credBaseURLKey  = "OPENAI_BASE_URL"
+	credModelKey    = "OPENAI_MODEL"
+	defaultModel    = "gpt-4"
 )
 
 // Variables used to form the prompt.
@@ -68,7 +71,7 @@ type Function struct {
 // agentInvoker is a consumer interface for working with agents. Notably this
 // is helpful for writing tests that mock the agent invocations.
 type agentInvoker interface {
-	Invoke(ctx context.Context, key, system, prompt string) (string, error)
+	Invoke(ctx context.Context, key, system, prompt, baseURL, modelName string) (string, error)
 }
 
 // Option modifies the underlying Function.
@@ -137,11 +140,26 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 	// TODO(negz): Where the heck is the newline at the end of this key
 	// coming from? Bug in crossplane render?
 	key := strings.Trim(string(b), "\n")
+
+	// Extract optional base URL from credentials
+	var baseURL string
+	if baseURLBytes, ok := c.Data[credBaseURLKey]; ok {
+		baseURL = strings.Trim(string(baseURLBytes), "\n")
+	}
+
+	// Extract optional model from credentials, default to gpt-4
+	model := defaultModel
+	if modelBytes, ok := c.Data[credModelKey]; ok {
+		model = strings.Trim(string(modelBytes), "\n")
+	}
+
 	d := pipelineDetails{
-		req:  req,
-		rsp:  rsp,
-		in:   in,
-		cred: key,
+		req:     req,
+		rsp:     rsp,
+		in:      in,
+		cred:    key,
+		baseURL: baseURL,
+		model:   model,
 	}
 
 	// If we're in a composition pipeline we want to do things with the
@@ -275,6 +293,10 @@ type pipelineDetails struct {
 	in *v1alpha1.Prompt
 	// LLM API credential
 	cred string
+	// Optional base URL for OpenAI API
+	baseURL string
+	// Optional model name, defaults to gpt-4
+	model string
 }
 
 // compositionPipeline processes the given pipelineDetails with the assumption
@@ -308,7 +330,7 @@ func (f *Function) compositionPipeline(ctx context.Context, log logging.Logger, 
 
 	log.Debug("Using prompt", "prompt", pb.String())
 
-	resp, err := f.ai.Invoke(ctx, d.cred, d.in.SystemPrompt, pb.String())
+	resp, err := f.ai.Invoke(ctx, d.cred, d.in.SystemPrompt, pb.String(), d.baseURL, d.model)
 
 	if err != nil {
 		response.Fatal(d.rsp, errors.Wrap(err, "failed to run chain"))
@@ -377,7 +399,7 @@ func (f *Function) operationPipeline(ctx context.Context, log logging.Logger, d 
 
 	log.Debug("Using prompt", "prompt", vars.String())
 
-	resp, err := f.ai.Invoke(ctx, d.cred, d.in.SystemPrompt, vars.String())
+	resp, err := f.ai.Invoke(ctx, d.cred, d.in.SystemPrompt, vars.String(), d.baseURL, d.model)
 
 	if err != nil {
 		response.Fatal(d.rsp, errors.Wrap(err, "failed to run chain"))
@@ -418,19 +440,23 @@ type agent struct {
 
 // Invoke makes an external call to the configured LLM with the supplied
 // credential key, system and user prompts.
-func (a *agent) Invoke(ctx context.Context, key, system, prompt string) (string, error) {
-	model, err := openaillm.New(
+func (a *agent) Invoke(ctx context.Context, key, system, prompt, baseURL, modelName string) (string, error) {
+	opts := []openaillm.Option{
 		openaillm.WithToken(key),
-		// NOTE(tnthornton): gpt-4 is noticeably slow compared to gpt-4o, but
-		// gpt-4o is sending input back that the agent is having trouble
-		// parsing. More to dig into here before switching.
-		openaillm.WithModel("gpt-4"),
-	)
+		openaillm.WithModel(modelName),
+	}
+
+	// Add custom base URL if provided
+	if baseURL != "" {
+		opts = append(opts, openaillm.WithBaseURL(baseURL))
+	}
+
+	model, err := openaillm.New(opts...)
 	if err != nil {
 		return "", errors.Wrap(err, "failed to build model")
 	}
 
-	agent := agents.NewOneShotAgent(
+	agent := agents.NewOpenAIFunctionsAgent(
 		model,
 		a.tools(ctx),
 		agents.WithMaxIterations(20),

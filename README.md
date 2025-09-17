@@ -145,6 +145,8 @@ There are a few steps to get this going.
 development.
 ```bash
 export OPENAI_API_KEY_B64=$(echo ${OPENAI_API_KEY} | base64)
+# Optional: export OPENAI_BASE_URL_B64=$(echo ${OPENAI_BASE_URL} | base64)
+# Optional: export OPENAI_MODEL_B64=$(echo ${OPENAI_MODEL} | base64)
 
 cat <<EOF | envsubst > example/secret.yaml
   apiVersion: v1
@@ -154,6 +156,12 @@ cat <<EOF | envsubst > example/secret.yaml
     namespace: crossplane-system
   data:
     OPENAI_API_KEY: ${OPENAI_API_KEY_B64}
+    # OPENAI_BASE_URL: ${OPENAI_BASE_URL_B64}
+    # Optional: Use custom OpenAI-compatible endpoint
+    # Example: http://localhost:11434/v1
+    # OPENAI_MODEL: ${OPENAI_MODEL_B64}
+    # Optional: Use custom model (defaults to gpt-4)
+    # Example: gpt-oss:20b
 EOF
 ```
 
