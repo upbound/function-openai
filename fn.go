@@ -44,11 +44,11 @@ import (
 )
 
 const (
-	credName        = "gpt"
-	credKey         = "OPENAI_API_KEY"
-	credBaseURLKey  = "OPENAI_BASE_URL"
-	credModelKey    = "OPENAI_MODEL"
-	defaultModel    = "gpt-4"
+	credName       = "gpt"
+	credKey        = "OPENAI_API_KEY"
+	credBaseURLKey = "OPENAI_BASE_URL"
+	credModelKey   = "OPENAI_MODEL"
+	defaultModel   = "gpt-4"
 )
 
 // Variables used to form the prompt.
