@@ -1,6 +1,6 @@
 module github.com/upbound/function-openai
 
-go 1.25.11
+go 1.25.12
 
 require (
 	github.com/alecthomas/kong v1.4.0
