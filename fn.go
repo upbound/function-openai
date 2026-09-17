@@ -19,8 +19,9 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"html/template"
+	"fmt"
 	"strings"
+	"text/template"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -49,6 +50,11 @@ const (
 	credBaseURLKey = "OPENAI_BASE_URL"
 	credModelKey   = "OPENAI_MODEL"
 	defaultModel   = "gpt-4"
+
+	// Cap generation when the input does not. Hosted APIs impose their own
+	// default, but a self-hosted OpenAI-compatible engine will happily generate
+	// until its context window is full.
+	defaultMaxTokens = 1024
 )
 
 // Variables used to form the prompt.
@@ -71,7 +77,7 @@ type Function struct {
 // agentInvoker is a consumer interface for working with agents. Notably this
 // is helpful for writing tests that mock the agent invocations.
 type agentInvoker interface {
-	Invoke(ctx context.Context, key, system, prompt, baseURL, modelName string) (string, error)
+	Invoke(ctx context.Context, key, system, prompt, baseURL, modelName string, maxTokens int) (string, error)
 }
 
 // Option modifies the underlying Function.
@@ -153,13 +159,19 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 		model = strings.Trim(string(modelBytes), "\n")
 	}
 
+	maxTokens := defaultMaxTokens
+	if in.MaxTokens > 0 {
+		maxTokens = in.MaxTokens
+	}
+
 	d := pipelineDetails{
-		req:     req,
-		rsp:     rsp,
-		in:      in,
-		cred:    key,
-		baseURL: baseURL,
-		model:   model,
+		req:       req,
+		rsp:       rsp,
+		in:        in,
+		cred:      key,
+		baseURL:   baseURL,
+		model:     model,
+		maxTokens: maxTokens,
 	}
 
 	// If we're in a composition pipeline we want to do things with the
@@ -241,14 +253,22 @@ func ComposedFromYAML(y string) (map[string]*fnv1.Resource, error) {
 	return out, nil
 }
 
-// removeYAMLMarkdown is a helper function for cleaning the output from GPT.
-// The responses can be inconsitent with markdown being returned at times.
-// This function takes a multi-line string containing YAML tags and cleans
-// those for future processing of the YAML stream.
-func removeYAMLMarkdown(in string) string {
-	wsRemoved := strings.TrimSpace(in)
-	yamlPrefix := strings.TrimPrefix(wsRemoved, "```yaml")
-	return strings.TrimSuffix(yamlPrefix, "```")
+// stripCodeFence removes a markdown code fence wrapping a model's reply.
+//
+// Models wrap structured output in fences unpredictably, and a fenced reply is
+// neither valid YAML nor valid JSON - so without this a perfectly good answer
+// is discarded. The previous version handled only a "```yaml" prefix, which
+// missed "```json" entirely; a model asked for JSON naturally reaches for that
+// one.
+func stripCodeFence(in string) string {
+	out := strings.TrimSpace(in)
+	for _, prefix := range []string{"```yaml", "```yml", "```json", "```"} {
+		if strings.HasPrefix(out, prefix) {
+			out = strings.TrimPrefix(out, prefix)
+			break
+		}
+	}
+	return strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(out), "```"))
 }
 
 // resourceFrom produces a map of resource name to resources derived from the
@@ -256,7 +276,10 @@ func removeYAMLMarkdown(in string) string {
 func (f *Function) resourceFrom(i string) (map[string]*fnv1.Resource, error) {
 	out := make(map[string]*fnv1.Resource)
 
-	b := []byte(i)
+	// Strip a markdown fence first. The composition path already did this; the
+	// operation path did not, so a fenced reply failed to parse here and was
+	// then discarded silently.
+	b := []byte(stripCodeFence(i))
 
 	// Is i YAML?
 	jb, err := yaml.YAMLToJSON(b)
@@ -275,6 +298,64 @@ func (f *Function) resourceFrom(i string) (map[string]*fnv1.Resource, error) {
 	out[name] = &fnv1.Resource{Resource: s}
 
 	return out, nil
+}
+
+// resourceIdentity is the tuple that decides which object a patch lands on.
+type resourceIdentity struct {
+	APIVersion string
+	Kind       string
+	Namespace  string
+	Name       string
+}
+
+func (r resourceIdentity) String() string {
+	gvk := strings.TrimSpace(r.APIVersion + " " + r.Kind)
+	if r.Namespace == "" {
+		return strings.TrimSpace(gvk + " " + r.Name)
+	}
+	return gvk + " " + r.Namespace + "/" + r.Name
+}
+
+// sameObject reports whether two identities name the same Kubernetes object.
+//
+// The API *version* is deliberately excluded. v1alpha1 and v1beta1 of one kind
+// address the same object, so rejecting on a version difference would refuse
+// output that is perfectly correct. Group, kind, namespace and name are what
+// actually select the object being patched.
+func (r resourceIdentity) sameObject(o resourceIdentity) bool {
+	return apiGroup(r.APIVersion) == apiGroup(o.APIVersion) &&
+		r.Kind == o.Kind &&
+		r.Namespace == o.Namespace &&
+		r.Name == o.Name
+}
+
+// apiGroup returns the group from an apiVersion, which is "" for core types.
+func apiGroup(apiVersion string) string {
+	if i := strings.Index(apiVersion, "/"); i >= 0 {
+		return apiVersion[:i]
+	}
+	return ""
+}
+
+// identityOf reads an object's identity out of unstructured content. It takes a
+// plain map so it serves both the watched resource and a parsed model reply.
+func identityOf(obj map[string]any) resourceIdentity {
+	id := resourceIdentity{}
+	if v, ok := obj["apiVersion"].(string); ok {
+		id.APIVersion = v
+	}
+	if v, ok := obj["kind"].(string); ok {
+		id.Kind = v
+	}
+	if md, ok := obj["metadata"].(map[string]any); ok {
+		if v, ok := md["name"].(string); ok {
+			id.Name = v
+		}
+		if v, ok := md["namespace"].(string); ok {
+			id.Namespace = v
+		}
+	}
+	return id
 }
 
 // attempts to identify if the function is operating within a composition
@@ -297,6 +378,8 @@ type pipelineDetails struct {
 	baseURL string
 	// Optional model name, defaults to gpt-4
 	model string
+	// Cap on generated tokens, defaults to defaultMaxTokens
+	maxTokens int
 }
 
 // compositionPipeline processes the given pipelineDetails with the assumption
@@ -330,7 +413,7 @@ func (f *Function) compositionPipeline(ctx context.Context, log logging.Logger, 
 
 	log.Debug("Using prompt", "prompt", pb.String())
 
-	resp, err := f.ai.Invoke(ctx, d.cred, d.in.SystemPrompt, pb.String(), d.baseURL, d.model)
+	resp, err := f.ai.Invoke(ctx, d.cred, d.in.SystemPrompt, pb.String(), d.baseURL, d.model, d.maxTokens)
 
 	if err != nil {
 		response.Fatal(d.rsp, errors.Wrap(err, "failed to run chain"))
@@ -338,7 +421,7 @@ func (f *Function) compositionPipeline(ctx context.Context, log logging.Logger, 
 	}
 
 	result := ""
-	dcds, err := ComposedFromYAML(removeYAMLMarkdown(resp))
+	dcds, err := ComposedFromYAML(stripCodeFence(resp))
 	if err != nil {
 		result = err.Error()
 		log.Debug("Submitted YAML stream", "result", result, "isError", true)
@@ -399,17 +482,66 @@ func (f *Function) operationPipeline(ctx context.Context, log logging.Logger, d 
 
 	log.Debug("Using prompt", "prompt", vars.String())
 
-	resp, err := f.ai.Invoke(ctx, d.cred, d.in.SystemPrompt, vars.String(), d.baseURL, d.model)
+	resp, err := f.ai.Invoke(ctx, d.cred, d.in.SystemPrompt, vars.String(), d.baseURL, d.model, d.maxTokens)
 
 	if err != nil {
 		response.Fatal(d.rsp, errors.Wrap(err, "failed to run chain"))
 		return d.rsp, err
 	}
 
+	// An empty reply is a deliberate no-op, and has to stay a genuine no-write.
+	// An operations pipeline driven by a WatchOperation re-triggers on any
+	// change to the watched resource, so writing anything at all when there is
+	// nothing to do makes the watch fire forever.
+	if strings.TrimSpace(stripCodeFence(resp)) == "" {
+		log.Debug("model returned no output, treating as an explicit no-op")
+		response.ConditionTrue(d.rsp, "FunctionSuccess", "NoOp").TargetCompositeAndClaim()
+		return d.rsp, nil
+	}
+
 	desired, err := f.resourceFrom(resp)
 	if err != nil {
-		// we didn't get a JSON based response from GPT
-		log.Debug("failed to get a JSON response back, no desired resources will be sent back to crossplane")
+		// Non-empty but unparseable. This used to be logged at Debug while
+		// still reporting FunctionSuccess=True with no desired resources, so a
+		// model that had drifted off-format was indistinguishable from one that
+		// had decided to do nothing - and nothing anywhere said so. Report it.
+		log.Info("cannot parse model output, no desired resources will be sent to crossplane",
+			"error", err)
+		response.ConditionFalse(d.rsp, "FunctionSuccess", "UnparseableModelOutput").
+			WithMessage(fmt.Sprintf("model output was neither valid YAML nor JSON: %s", err)).
+			TargetCompositeAndClaim()
+		response.Warning(d.rsp, errors.Wrap(err, "cannot parse model output"))
+		return d.rsp, nil
+	}
+
+	// Refuse to patch anything other than the resource we were asked about.
+	//
+	// A model under load copies a few-shot example's name and namespace out of
+	// the prompt instead of reading the watched resource's. Crossplane
+	// server-side-applies whatever comes back, so on a fleet where that name
+	// exists this silently reconfigures somebody else's resource. Measured on a
+	// self-hosted CPU engine: 5 of 8 Operations did this under 8-way
+	// concurrency, 0 of 2 sequentially.
+	//
+	// This is a safety invariant, so it is enforced here rather than left to
+	// prompt wording or engine capacity. Rewriting the identity to match would
+	// be worse than refusing: the decision itself was reasoned about the wrong
+	// resource, so the instance class in it cannot be trusted either.
+	watched := identityOf(rs[0].Resource.UnstructuredContent())
+	for _, r := range desired {
+		got := identityOf(r.Resource.AsMap())
+		if got.sameObject(watched) {
+			continue
+		}
+		log.Info("model returned a resource other than the watched one, refusing to apply",
+			"watched", watched.String(), "returned", got.String())
+		response.ConditionFalse(d.rsp, "FunctionSuccess", "ResourceIdentityMismatch").
+			WithMessage(fmt.Sprintf("model returned %s but the watched resource is %s; "+
+				"refusing to apply", got, watched)).
+			TargetCompositeAndClaim()
+		response.Warning(d.rsp, errors.Errorf(
+			"model returned %s but the watched resource is %s", got, watched))
+		return d.rsp, nil
 	}
 
 	response.ConditionTrue(d.rsp, "FunctionSuccess", "Success").TargetCompositeAndClaim()
@@ -440,7 +572,7 @@ type agent struct {
 
 // Invoke makes an external call to the configured LLM with the supplied
 // credential key, system and user prompts.
-func (a *agent) Invoke(ctx context.Context, key, system, prompt, baseURL, modelName string) (string, error) {
+func (a *agent) Invoke(ctx context.Context, key, system, prompt, baseURL, modelName string, maxTokens int) (string, error) {
 	opts := []openaillm.Option{
 		openaillm.WithToken(key),
 		openaillm.WithModel(modelName),
@@ -468,6 +600,9 @@ func (a *agent) Invoke(ctx context.Context, key, system, prompt, baseURL, modelN
 		agents.NewExecutor(agent),
 		prompt,
 		chains.WithTemperature(float64(0)),
+		// Without a cap the engine generates until its context is exhausted.
+		// See the MaxTokens field on the Prompt input.
+		chains.WithMaxTokens(maxTokens),
 	)
 }
 

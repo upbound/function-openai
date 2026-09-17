@@ -26,3 +26,5 @@ example/secret.yaml
 # up tests
 .up
 up
+# Built function packages
+*.xpkg

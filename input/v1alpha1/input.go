@@ -42,4 +42,17 @@ type Prompt struct {
 	SystemPrompt string `json:"systemPrompt"`
 	// UserPrompt to send to GPT.
 	UserPrompt string `json:"userPrompt"`
+
+	// MaxTokens caps how many tokens the model may generate in reply.
+	//
+	// This matters most against a self-hosted engine. Without a cap, an
+	// OpenAI-compatible server generates until it exhausts its context window:
+	// llama.cpp reports "decode() failed: Context size has been exceeded" and
+	// the function blocks until the request finally ends, which on CPU
+	// inference can hang an Operation for many minutes. Hosted APIs apply
+	// their own default, which is why this went unnoticed.
+	//
+	// Defaults to 1024 when unset, which is ample for a structured reply.
+	// +optional
+	MaxTokens int `json:"maxTokens,omitempty"`
 }
